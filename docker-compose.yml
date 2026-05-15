@@ -1,0 +1,17 @@
+services:
+  polywx-bot:
+    build: .
+    container_name: polywx-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - polywx-data:/data
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+volumes:
+  polywx-data:
