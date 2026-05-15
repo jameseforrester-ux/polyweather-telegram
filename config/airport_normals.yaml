@@ -1,0 +1,182 @@
+# Curated monthly climate normals for the airports Polymarket actually uses
+# as resolution stations for daily high-temp markets.
+#
+# The bot discovers these from the Wunderground URL embedded in each
+# Polymarket event's description (e.g.  wunderground.com/.../KBKF), so this
+# file does NOT need an entry for every market — only the ones we want
+# higher-accuracy climatology for. Airports missing from this file fall
+# back to a parametric latitude × month model (see climatology.py).
+#
+# Airport coordinates and timezones come from the `airportsdata` package
+# at runtime; this file only provides:
+#   monthly_normals: 12 months of [daily_max_F, daily_min_F]
+#   peak_local_hour: hour-of-day (local) where daily max typically occurs.
+#                    Default 15. Coastal sites with sea breeze: 14. Desert: 16.
+#
+# Normals values are approximate NOAA NCEI 1991-2020 normals for each
+# specific station (NOT a substitute "nearby" airport). Refine these against
+# the actual station's published normals when convenient.
+#
+# Verified Polymarket → Resolution airport pairs (as of May 2026):
+#   NYC         → KLGA  (LaGuardia)
+#   Miami       → KMIA  (Miami International)
+#   Austin      → KAUS  (Austin-Bergstrom)
+#   Chicago     → KORD  (O'Hare)
+#   Denver      → KBKF  (Buckley SFB, Aurora — NOT Denver International!)
+#   Los Angeles → KLAX  (LAX)
+#   Houston     → KHOU  (William P. Hobby — NOT Bush Intercontinental!)
+#   Seattle     → KSEA  (SeaTac)
+#   Atlanta     → KATL  (Hartsfield-Jackson — likely; verify on next market)
+#
+# Polymarket also runs international markets (London, Hong Kong, etc.) which
+# are out of HRRR's CONUS scope and not handled by this build.
+
+KLGA:
+  peak_local_hour: 15
+  monthly_normals:
+    1: [38, 27]
+    2: [42, 29]
+    3: [50, 35]
+    4: [60, 44]
+    5: [70, 54]
+    6: [79, 64]
+    7: [84, 70]
+    8: [83, 69]
+    9: [76, 62]
+    10: [65, 51]
+    11: [54, 42]
+    12: [44, 33]
+
+KMIA:
+  peak_local_hour: 14
+  monthly_normals:
+    1: [76, 60]
+    2: [78, 61]
+    3: [80, 64]
+    4: [83, 68]
+    5: [86, 72]
+    6: [89, 76]
+    7: [90, 77]
+    8: [91, 77]
+    9: [89, 76]
+    10: [85, 72]
+    11: [80, 66]
+    12: [77, 62]
+
+KAUS:
+  peak_local_hour: 16
+  monthly_normals:
+    1: [62, 42]
+    2: [65, 45]
+    3: [73, 52]
+    4: [79, 58]
+    5: [86, 66]
+    6: [91, 72]
+    7: [96, 74]
+    8: [97, 74]
+    9: [91, 69]
+    10: [82, 60]
+    11: [71, 50]
+    12: [63, 43]
+
+KORD:
+  peak_local_hour: 15
+  monthly_normals:
+    1: [33, 19]
+    2: [37, 22]
+    3: [47, 29]
+    4: [59, 39]
+    5: [70, 49]
+    6: [80, 60]
+    7: [84, 65]
+    8: [82, 64]
+    9: [75, 56]
+    10: [62, 43]
+    11: [49, 33]
+    12: [37, 24]
+
+# Buckley SFB (Aurora CO) — Polymarket's Denver resolution airport.
+# Slightly cooler in summer than KDEN proper, similar in winter.
+KBKF:
+  peak_local_hour: 15
+  monthly_normals:
+    1: [45, 17]
+    2: [48, 20]
+    3: [55, 26]
+    4: [62, 32]
+    5: [71, 42]
+    6: [83, 51]
+    7: [89, 57]
+    8: [87, 56]
+    9: [79, 47]
+    10: [66, 35]
+    11: [52, 24]
+    12: [44, 18]
+
+KLAX:
+  peak_local_hour: 14
+  monthly_normals:
+    1: [66, 49]
+    2: [67, 50]
+    3: [68, 52]
+    4: [69, 54]
+    5: [70, 58]
+    6: [73, 61]
+    7: [76, 64]
+    8: [78, 65]
+    9: [78, 64]
+    10: [75, 60]
+    11: [71, 54]
+    12: [67, 49]
+
+# Houston Hobby — Polymarket's Houston resolution airport (NOT Bush Intercontinental).
+# More coastal-influenced than KIAH: ~2°F cooler in summer, ~2°F milder in winter.
+KHOU:
+  peak_local_hour: 15
+  monthly_normals:
+    1: [65, 47]
+    2: [68, 50]
+    3: [74, 56]
+    4: [80, 62]
+    5: [86, 69]
+    6: [91, 74]
+    7: [93, 76]
+    8: [93, 76]
+    9: [89, 71]
+    10: [83, 62]
+    11: [74, 53]
+    12: [67, 48]
+
+KSEA:
+  peak_local_hour: 16
+  monthly_normals:
+    1: [47, 37]
+    2: [50, 38]
+    3: [54, 40]
+    4: [59, 43]
+    5: [65, 48]
+    6: [70, 53]
+    7: [77, 57]
+    8: [78, 57]
+    9: [72, 53]
+    10: [60, 46]
+    11: [51, 40]
+    12: [46, 36]
+
+# Atlanta — KATL is the likely resolution airport but we haven't verified
+# from a recent market description; bot logs will confirm on first encounter.
+KATL:
+  peak_local_hour: 15
+  monthly_normals:
+    1: [54, 35]
+    2: [58, 37]
+    3: [66, 44]
+    4: [74, 51]
+    5: [81, 60]
+    6: [87, 68]
+    7: [89, 71]
+    8: [88, 70]
+    9: [83, 65]
+    10: [74, 53]
+    11: [64, 43]
+    12: [56, 37]
