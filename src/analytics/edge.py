@@ -6,6 +6,7 @@ For each bucket of an event, compute:
     edge       : fair_prob - best_ask  (positive = ask is cheap)
 """
 from __future__ import annotations
+import asyncio
 import logging
 from dataclasses import dataclass
 
@@ -76,11 +77,26 @@ async def compute_event_view(event_id: str, fetch_asks: bool = True) -> EventVie
     else:
         probs = [None] * len(raw_buckets)
 
+    # Fetch asks in parallel; only for buckets with non-trivial fair prob
+    # (saves CLOB calls on dead-end buckets that won't have edge anyway).
+    async def _ask_or_none(tok, p):
+        if not tok or p is None or p < 0.005:
+            return None
+        try:
+            return await pm.get_best_ask(tok)
+        except Exception:
+            return None
+
+    if fetch_asks:
+        asks = await asyncio.gather(*[
+            _ask_or_none(b["yes_token_id"], p)
+            for b, p in zip(raw_buckets, probs)
+        ])
+    else:
+        asks = [None] * len(raw_buckets)
+
     views: list[BucketView] = []
-    for b, p in zip(raw_buckets, probs):
-        ask = None
-        if fetch_asks and b["yes_token_id"]:
-            ask = await pm.get_best_ask(b["yes_token_id"])
+    for b, p, ask in zip(raw_buckets, probs, asks):
         edge = None
         if p is not None and ask is not None:
             edge = p - ask

@@ -26,6 +26,20 @@ DROP_THRESHOLD = float(os.getenv("ALERT_BUCKET_PROB_DROP", "0.15"))
 MIN_FAIR_FOR_WATCH = float(os.getenv("ALERT_MIN_FAIR_FOR_WATCH", "0.05"))
 
 
+# Module-level cache of the most recently computed views.
+# Populated by evaluate_all(); read by the bot's /top command for instant
+# response without re-scanning every event/bucket.
+_LAST_VIEWS: dict[str, EventView] = {}
+
+
+def get_cached_views() -> list[EventView]:
+    return list(_LAST_VIEWS.values())
+
+
+def get_cached_view(event_id: str) -> EventView | None:
+    return _LAST_VIEWS.get(event_id)
+
+
 @dataclass
 class Alert:
     kind: str       # "LEADER_DROP" | "WATCH_DROP" | "BUSTED" | "FLOOR_UNREACHABLE"
@@ -130,14 +144,17 @@ def _evaluate_event(view: EventView) -> list[Alert]:
 
 async def evaluate_all() -> list[Alert]:
     out: list[Alert] = []
+    _LAST_VIEWS.clear()
     for ev in db.list_active_events():
         try:
-            view = await compute_event_view(ev["event_id"], fetch_asks=False)
+            view = await compute_event_view(ev["event_id"], fetch_asks=True)
         except Exception as e:
             log.exception("Event view failed for %s: %s", ev["event_id"], e)
             continue
         if view is None:
             continue
+
+        _LAST_VIEWS[view.event_id] = view
 
         # snapshot histories per bucket (light, just leader's prob for now)
         if view.buckets:
