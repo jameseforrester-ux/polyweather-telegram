@@ -54,37 +54,53 @@ def fair_max(
     airport: Airport,
     hrrr_pred_max_f: float | None,
     obs_max_f: float | None,
+    event_local_date: str | None = None,
     local_time: datetime | None = None,
 ) -> float | None:
-    """Blended point estimate for today's daily max, °F.
+    """Blended point estimate for the daily max on `event_local_date`, °F.
 
-    Returns None only if we have neither forecast nor observation.
+    Behavior:
+    - If `event_local_date` is provided and isn't today (airport-local), then
+      today's observations don't constrain it — `obs_max_f` is ignored.
+    - When HRRR/GFS is missing, falls back to a climo-anchored blend instead
+      of letting an early-morning anomaly projection run away unchecked.
+    - The anomaly projection is capped at ±15°F from climo_daily_max to
+      prevent overnight-warmth artifacts producing absurd daytime peaks.
     """
     n = local_time or now_local(airport)
+    today_local_date = n.date().isoformat()
+
+    # Forward-day events: today's obs are about today, not the target day.
+    if event_local_date is not None and event_local_date != today_local_date:
+        obs_max_f = None
+
     peak = airport.peak_local_hour
     h = n.hour + n.minute / 60.0
+    climo_daily_max, _ = airport.normals(n.month)
 
-    # Peak past: observation is the answer.
+    # Forecast base: NWP if available, climo otherwise.
+    forecast_base = hrrr_pred_max_f if hrrr_pred_max_f is not None else climo_daily_max
+
+    # Peak passed and we have today's obs — observation IS the answer.
     if obs_max_f is not None and h >= peak:
         return obs_max_f
 
-    # Observation-driven projection
+    # Observation-driven projection, capped to a sane range around climo.
     obs_proj = None
     if obs_max_f is not None:
-        obs_proj = anomaly_projection(airport, obs_max_f, n)
+        raw_proj = anomaly_projection(airport, obs_max_f, n)
+        cap_high = climo_daily_max + 15.0
+        cap_low = climo_daily_max - 15.0
+        obs_proj = max(cap_low, min(cap_high, raw_proj))
 
-    # Blend
+    # Blend obs projection with forecast base by time-of-day weight.
     w = time_of_day_obs_weight(airport, n)
-    if hrrr_pred_max_f is not None and obs_proj is not None:
-        blended = w * obs_proj + (1.0 - w) * hrrr_pred_max_f
-    elif obs_proj is not None:
-        blended = obs_proj
-    elif hrrr_pred_max_f is not None:
-        blended = hrrr_pred_max_f
+    if obs_proj is not None:
+        blended = w * obs_proj + (1.0 - w) * forecast_base
     else:
-        return None
+        blended = forecast_base
 
-    # Floor at observation
+    # Floor at today's observation if applicable.
     if obs_max_f is not None:
         blended = max(blended, obs_max_f)
     return blended

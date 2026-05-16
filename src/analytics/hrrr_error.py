@@ -58,10 +58,29 @@ def rolling_spread(airport: Airport, local_date: str, n: int = 6) -> float:
     return float(statistics.pstdev(values))
 
 
-def lead_hours_to_peak(airport: Airport, local_time: datetime | None = None) -> float:
+def lead_hours_to_peak(airport: Airport, event_local_date: str | None = None,
+                       local_time: datetime | None = None) -> float:
+    """Hours from `local_time` until peak heating on `event_local_date`.
+    If date is None, defaults to today's local date."""
     n = local_time or now_local(airport)
     h = n.hour + n.minute / 60.0
-    return max(0.0, airport.peak_local_hour - h)
+    same_day_lead = max(0.0, airport.peak_local_hour - h)
+    if event_local_date is None:
+        return same_day_lead
+    today = n.date().isoformat()
+    if event_local_date == today:
+        return same_day_lead
+    # Forward day: distance to that day's peak in hours
+    from datetime import date
+    try:
+        target = date.fromisoformat(event_local_date)
+        delta_days = (target - n.date()).days
+    except Exception:
+        return same_day_lead
+    if delta_days <= 0:
+        return same_day_lead
+    # hours from now to midnight of target, plus hours from midnight to peak
+    return (24 - h) + 24 * (delta_days - 1) + airport.peak_local_hour
 
 
 def combined_sigma(
@@ -72,7 +91,7 @@ def combined_sigma(
 ) -> float:
     """Combined sigma in °F."""
     n = local_time or now_local(airport)
-    lead = lead_hours_to_peak(airport, n)
+    lead = lead_hours_to_peak(airport, local_date, n)
     hist = historical_sigma(lead)
     rolling = rolling_spread(airport, local_date)
 

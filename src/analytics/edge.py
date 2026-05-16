@@ -67,7 +67,7 @@ async def compute_event_view(event_id: str, fetch_asks: bool = True) -> EventVie
     preds = db.recent_hrrr_preds(airport.icao, ev["local_date"], limit=1)
     hrrr_pred = preds[0][0] if preds else None
 
-    fm = fair_max(airport, hrrr_pred, obs_max)
+    fm = fair_max(airport, hrrr_pred, obs_max, event_local_date=ev["local_date"])
     sigma = combined_sigma(airport, ev["local_date"], obs_max)
 
     raw_buckets = db.event_buckets(event_id)

@@ -96,6 +96,27 @@ def _fmt_temp(v: float | None, suffix: str = "°F") -> str:
     return "—" if v is None else f"{v:.1f}{suffix}"
 
 
+def _is_intl_icao(icao: str) -> bool:
+    """Non-CONUS = anything not a 4-letter K-prefix code."""
+    return not (icao and len(icao) == 4 and icao.upper().startswith("K"))
+
+
+def _fmt_temp_unit(v_f: float | None, icao: str) -> str:
+    """Format a Fahrenheit temp, converting to Celsius for non-CONUS airports."""
+    if v_f is None:
+        return "—"
+    if _is_intl_icao(icao):
+        return f"{(v_f - 32.0) * 5.0 / 9.0:.1f}°C"
+    return f"{v_f:.1f}°F"
+
+
+def _fmt_sigma_unit(sigma_f: float, icao: str) -> str:
+    """Format an uncertainty (delta). Convert magnitude only, no offset."""
+    if _is_intl_icao(icao):
+        return f"{sigma_f * 5.0 / 9.0:.1f}°C"
+    return f"{sigma_f:.1f}°F"
+
+
 def _city_from_title(title: str) -> str:
     m = RX_CITY_FROM_TITLE.search(title or "")
     return m.group(1).strip() if m else "?"
@@ -201,9 +222,9 @@ def _fmt_event_view(view: EventView) -> str:
     lines = [
         f"*{city}*  ·  `{view.airport_icao}`  ·  `{view.local_date}`",
         "",
-        f"Obs max so far:  *{_fmt_temp(view.obs_max_f)}*",
-        f"NWP latest run: {_fmt_temp(view.hrrr_pred_max_f)}",
-        f"Fair max (blended): *{_fmt_temp(view.fair_max_f)}*  ±{view.sigma_f:.1f}°F",
+        f"Obs max so far:  *{_fmt_temp_unit(view.obs_max_f, view.airport_icao)}*",
+        f"NWP latest run: {_fmt_temp_unit(view.hrrr_pred_max_f, view.airport_icao)}",
+        f"Fair max (blended): *{_fmt_temp_unit(view.fair_max_f, view.airport_icao)}*  ±{_fmt_sigma_unit(view.sigma_f, view.airport_icao)}",
         "",
         "`bucket          fair    ask    edge`",
     ]
