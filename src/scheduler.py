@@ -59,11 +59,11 @@ async def job_metar(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def job_hrrr(context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Despite the historic name, this dispatches HRRR for CONUS airports
-    and GFS for everything else, via src.ingest.nwp."""
-    active_icaos = {
+    """Hourly NWP refresh. Calls Open-Meteo for each active airport.
+    Sequential to be polite to the free tier; each call ~1s."""
+    active_icaos = sorted({
         ev["airport_icao"] for ev in list_active_events() if ev["airport_icao"]
-    }
+    })
     if not active_icaos:
         return
     for icao in active_icaos:
@@ -71,7 +71,7 @@ async def job_hrrr(context: ContextTypes.DEFAULT_TYPE) -> None:
         if ap is None:
             continue
         try:
-            await asyncio.to_thread(nwp_mod.ingest_airport, ap)
+            await nwp_mod.ingest_airport(ap)
         except Exception as e:
             log.exception("NWP ingest %s error: %s", icao, e)
 

@@ -1,125 +1,91 @@
-"""HRRR ingestor via Herbie.
+"""HRRR/GFS forecasts via Open-Meteo API.
 
-For a given airport, finds the most recent HRRR run that's available, pulls
-the 2 m temperature for each forecast hour that covers the rest of the local
-day, and returns the max in °F.
+Replaces the old Herbie/GRIB-based fetcher. Pure HTTPS JSON — no native deps,
+no eccodes, no cfgrib, no segfaults.
 
-HRRR usually posts to AWS ~50 minutes after the init hour. Herbie tries
-multiple sources (NOMADS, AWS, Google) and picks the first that has the file.
+For CONUS airports we ask Open-Meteo to use the `gfs_hrrr` model (HRRR at
+3 km when available, GFS fallback after HRRR's 18-48h horizon). Multi-day
+forecasts are returned in a single request, so for each ingest cycle we
+populate predictions for every upcoming target date the airport has an
+active event for.
 """
 from __future__ import annotations
+import asyncio
 import logging
-import math
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
-import numpy as np
+import httpx
 
 from .. import db
-from .climatology import Airport, now_local, local_today_bounds_utc
+from .climatology import Airport, now_local
 
 log = logging.getLogger(__name__)
 
-
-def _latest_likely_init_utc() -> datetime:
-    """The most recent HRRR init hour likely to have posted to AWS."""
-    now = datetime.now(timezone.utc)
-    # HRRR posts ~50 min after the top of its init hour; be conservative.
-    if now.minute >= 55:
-        return now.replace(minute=0, second=0, microsecond=0)
-    return (now - timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
+URL = "https://api.open-meteo.com/v1/forecast"
 
 
-def _is_long_run(init: datetime) -> bool:
-    """The 00/06/12/18Z runs go out to F48. Hourly runs go to F18."""
-    return init.hour in (0, 6, 12, 18)
+def _target_dates_for(airport: Airport) -> list[str]:
+    """Local dates this airport has active events for."""
+    seen = []
+    for ev in db.list_active_events():
+        if ev["airport_icao"] == airport.icao and ev["local_date"]:
+            if ev["local_date"] not in seen:
+                seen.append(ev["local_date"])
+    return sorted(seen)
 
 
-def _nearest_grid_value(ds, lat: float, lon: float) -> float:
-    """Find the value at the grid point closest to (lat, lon)."""
-    lats = ds.latitude.values
-    lons = ds.longitude.values
-    # HRRR lons are 0..360 east; convert input to same convention if needed.
-    lon_e = lon % 360
-    cos_lat = math.cos(math.radians(lat))
-    dlat = lats - lat
-    dlon = (lons - lon_e + 180) % 360 - 180
-    d2 = dlat * dlat + (dlon * cos_lat) ** 2
-    iy, ix = np.unravel_index(np.argmin(d2), d2.shape)
-    # variable name varies; pick the first data var
-    var_name = next(iter(ds.data_vars))
-    return float(ds[var_name].values[iy, ix])
-
-
-def _fetch_one_hour(init_utc: datetime, fxx: int, airport: Airport) -> float | None:
-    """Return 2m temp °F at airport grid point for forecast hour fxx of init_utc."""
-    from herbie import Herbie  # imported lazily so module import doesn't pull herbie until needed
-
+async def fetch_daily_maxes(airport: Airport, models: str = "gfs_hrrr") -> dict[str, float]:
+    """Returns {local_date: max_temp_F} for every available forecast day.
+    Open-Meteo returns up to ~7 days. The `daily=temperature_2m_max` parameter
+    aggregates hourly temps at airport-local midnight boundaries, which is
+    exactly what Polymarket resolves on."""
+    params = {
+        "latitude": str(airport.lat),
+        "longitude": str(airport.lon),
+        "daily": "temperature_2m_max",
+        "temperature_unit": "fahrenheit",
+        "timezone": airport.tz,
+        "forecast_days": "7",
+        "models": models,
+    }
     try:
-        H = Herbie(
-            init_utc.strftime("%Y-%m-%d %H:00"),
-            model="hrrr",
-            product="sfc",
-            fxx=fxx,
-            verbose=False,
-        )
-        ds = H.xarray(":TMP:2 m above ground:")
+        async with httpx.AsyncClient(timeout=20.0) as c:
+            r = await c.get(URL, params=params,
+                            headers={"User-Agent": "polywx-bot/1.0"})
+            r.raise_for_status()
+            data = r.json()
     except Exception as e:
-        log.debug("Herbie miss for %s F%02d: %s", init_utc, fxx, e)
-        return None
+        log.warning("Open-Meteo fetch failed for %s: %s", airport.icao, e)
+        return {}
 
-    try:
-        t_k = _nearest_grid_value(ds, airport.lat, airport.lon)
-    except Exception as e:
-        log.warning("Grid extract failed %s F%02d %s: %s", init_utc, fxx, airport.icao, e)
-        return None
-
-    return t_k * 9.0 / 5.0 - 459.67  # K -> °F
-
-
-def fetch_today_max(airport: Airport) -> tuple[datetime, float] | tuple[None, None]:
-    """Pull HRRR forecasts that cover the remainder of `airport`'s local day and
-    return (run_init_utc, max_temp_f). If peak heating is already past, returns
-    (run_init_utc, None) so the caller can fall back to the observed max."""
-    init = _latest_likely_init_utc()
-    start_utc, end_utc = local_today_bounds_utc(airport)
-    now_utc = datetime.now(timezone.utc)
-    coverage_start = max(now_utc, init + timedelta(hours=1))
-    coverage_end = end_utc
-
-    if coverage_start >= coverage_end:
-        return init, None
-
-    max_fxx = 48 if _is_long_run(init) else 18
-
-    temps: list[float] = []
-    for fxx in range(1, max_fxx + 1):
-        valid = init + timedelta(hours=fxx)
-        if valid < coverage_start:
-            continue
-        if valid > coverage_end:
-            break
-        t_f = _fetch_one_hour(init, fxx, airport)
-        if t_f is not None:
-            temps.append(t_f)
-
-    if not temps:
-        return init, None
-    return init, max(temps)
+    daily = data.get("daily") or {}
+    dates = daily.get("time") or []
+    maxes = daily.get("temperature_2m_max") or []
+    out: dict[str, float] = {}
+    for d, t in zip(dates, maxes):
+        if t is not None:
+            out[d] = float(t)
+    return out
 
 
-def ingest_airport(airport: Airport) -> tuple[datetime | None, float | None]:
-    """Persist the latest-run max forecast for the airport's local date."""
-    init, pred_max = fetch_today_max(airport)
-    if init is None:
-        return None, None
-    local_date = now_local(airport).date().isoformat()
-    db.upsert_hrrr_pred(
-        airport.icao,
-        init.isoformat(timespec="seconds"),
-        local_date,
-        pred_max,
+async def ingest_airport(airport: Airport) -> tuple[int, dict[str, float]]:
+    """Fetch + persist daily-max forecasts for all upcoming dates this airport
+    has active events for. Returns (n_dates_written, {date: pred_f})."""
+    targets = _target_dates_for(airport)
+    forecasts = await fetch_daily_maxes(airport, models="gfs_hrrr")
+    if not forecasts:
+        log.info("HRRR %s: no forecast data returned", airport.icao)
+        return 0, {}
+
+    init_str = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    n = 0
+    for target in targets:
+        pred = forecasts.get(target)
+        if pred is not None:
+            db.upsert_hrrr_pred(airport.icao, init_str, target, pred)
+            n += 1
+    msg_targets = ", ".join(
+        f"{d}={forecasts[d]:.1f}°F" for d in targets if d in forecasts
     )
-    log.info("HRRR %s @ %s for %s: pred_max=%s", airport.icao,
-             init.strftime("%Y-%m-%dT%H"), local_date,
-             "n/a" if pred_max is None else f"{pred_max:.1f}°F")
-    return init, pred_max
+    log.info("HRRR %s: %d dates written (%s)", airport.icao, n, msg_targets or "no overlap")
+    return n, {d: forecasts[d] for d in targets if d in forecasts}

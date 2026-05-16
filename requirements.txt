@@ -1,8 +1,5 @@
 python-telegram-bot==21.6
 airportsdata==20240806
-herbie-data==2024.8.0
-xarray==2024.9.0
-cfgrib==0.9.14.0
 numpy==2.1.2
 pandas==2.2.3
 scipy==1.14.1
