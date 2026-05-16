@@ -1,18 +1,28 @@
 """Polymarket ingestor.
 
-- Gamma API: discover active events tagged/keyworded as daily-high-temp markets.
-  Parse the resolution airport from each event's description, and parse the
-  bucket range and clob token IDs for each child market.
+Discovery flow per event:
+  1. Pull active events tagged `daily-temperature` from Gamma (paginated).
+  2. Keep only `highest temperature` markets.
+  3. Resolution airport:
+       a. PRIMARY: parse 4-letter ICAO from the Wunderground URL in the
+          description (`wunderground.com/.../K****` or similar).
+       b. FALLBACK: parse the city name from the title and look it up in
+          config/intl_airports.yaml.
+  4. Bucket parsing: handles both Fahrenheit (US) and Celsius (intl) labels;
+     converts to °F internally.
 
-- CLOB API: pull live order books for the YES tokens so we can compute edge.
+CLOB book lookups for each YES token power the edge calculation in
+analytics/edge.py.
 """
 from __future__ import annotations
 import os
 import re
 import json
 import logging
+from pathlib import Path
 from datetime import datetime, timezone
 import httpx
+import yaml
 
 from .. import db
 from .climatology import get_airport
@@ -22,17 +32,37 @@ log = logging.getLogger(__name__)
 GAMMA_URL = os.getenv("POLYMARKET_GAMMA_URL", "https://gamma-api.polymarket.com")
 CLOB_URL = os.getenv("POLYMARKET_CLOB_URL", "https://clob.polymarket.com")
 
-# Keywords that suggest a daily-high-temp market.
 TITLE_HINTS = ("highest temperature", "high temperature", "hottest day", "high temp")
 
-# Polymarket high-temp market descriptions always link to Wunderground at
-# the resolution airport — e.g. wunderground.com/history/daily/us/co/aurora/KBKF.
-# This is the authoritative way to identify the airport; do NOT guess from
-# the city name in the title (Polymarket uses KBKF for "Denver", KHOU for
-# "Houston", etc — non-obvious choices).
+# ---------------------------------------------------------------------------
+# Airport resolution — two-stage
+
+# Any 4-letter ICAO in a Wunderground URL. Used to be K-only; now broader so
+# we catch international stations Polymarket sometimes links.
 RX_ICAO_FROM_WUNDERGROUND = re.compile(
-    r"wunderground\.com[^\s\"']*?/(K[A-Z]{3})\b", re.I
+    r"wunderground\.com[^\s\"'<>]*?/([A-Z]{4})\b", re.I
 )
+
+# Title format: "Highest temperature in <City> on <Date>?"
+RX_CITY_FROM_TITLE = re.compile(
+    r"highest temperature in\s+(.+?)\s+on\b", re.I
+)
+
+_CITY_TO_ICAO: dict[str, str] | None = None
+
+
+def _load_city_map() -> dict[str, str]:
+    global _CITY_TO_ICAO
+    if _CITY_TO_ICAO is not None:
+        return _CITY_TO_ICAO
+    path = Path(__file__).parent.parent.parent / "config" / "intl_airports.yaml"
+    if not path.exists():
+        _CITY_TO_ICAO = {}
+        return _CITY_TO_ICAO
+    with open(path) as f:
+        data = yaml.safe_load(f) or {}
+    _CITY_TO_ICAO = {k.strip().lower(): v.strip().upper() for k, v in data.items()}
+    return _CITY_TO_ICAO
 
 
 def parse_resolution_icao(description: str) -> str | None:
@@ -42,93 +72,148 @@ def parse_resolution_icao(description: str) -> str | None:
     return m.group(1).upper() if m else None
 
 
-# ---------------------------------------------------------------------------
-# Bucket parsing
+def parse_city_from_title(title: str) -> str | None:
+    if not title:
+        return None
+    m = RX_CITY_FROM_TITLE.search(title)
+    return m.group(1).strip() if m else None
 
-RX_RANGE      = re.compile(r"(\d{2,3})\s*[-–—to]+\s*(\d{2,3})")
-RX_OR_LOWER   = re.compile(r"(\d{2,3})\s*°?\s*(?:f)?\s*(?:or\s+lower|or\s+below|or\s+less|or\s+colder)", re.I)
-RX_BELOW      = re.compile(r"(?:below|under|less than|<)\s*(\d{2,3})", re.I)
-RX_OR_HIGHER  = re.compile(r"(\d{2,3})\s*°?\s*(?:f)?\s*(?:or\s+higher|or\s+above|or\s+more|or\s+hotter|\+)", re.I)
-RX_ABOVE      = re.compile(r"(?:above|over|more than|>)\s*(\d{2,3})", re.I)
+
+def resolve_airport_icao(title: str, description: str) -> tuple[str | None, str]:
+    """Returns (icao, source). source is 'url', 'city', or 'unresolved'."""
+    icao = parse_resolution_icao(description)
+    if icao:
+        return icao, "url"
+    city = parse_city_from_title(title)
+    if city:
+        mapping = _load_city_map()
+        icao = mapping.get(city.lower())
+        if icao:
+            return icao, "city"
+    return None, "unresolved"
+
+
+# ---------------------------------------------------------------------------
+# Bucket parsing — supports °F (US) and °C (international)
+
+RX_RANGE_F    = re.compile(r"(\d{2,3})\s*[-–—]\s*(\d{2,3})\s*°?\s*f", re.I)
+RX_RANGE_C    = re.compile(r"(-?\d{1,3})\s*[-–—]\s*(-?\d{1,3})\s*°?\s*c", re.I)
+RX_RANGE_ANY  = re.compile(r"(-?\d{1,3})\s*[-–—to]+\s*(-?\d{1,3})")
+
+RX_OR_LOWER_F = re.compile(r"(-?\d{1,3})\s*°?\s*f?\s*(?:or\s+lower|or\s+below|or\s+less|or\s+colder)", re.I)
+RX_OR_LOWER_C = re.compile(r"(-?\d{1,3})\s*°?\s*c\s*(?:or\s+lower|or\s+below|or\s+less|or\s+colder)", re.I)
+RX_BELOW      = re.compile(r"(?:below|under|less than|<)\s*(-?\d{1,3})", re.I)
+
+RX_OR_HIGHER_F= re.compile(r"(-?\d{1,3})\s*°?\s*f?\s*(?:or\s+higher|or\s+above|or\s+more|or\s+hotter|\+)", re.I)
+RX_OR_HIGHER_C= re.compile(r"(-?\d{1,3})\s*°?\s*c\s*(?:or\s+higher|or\s+above|or\s+more|or\s+hotter|\+)", re.I)
+RX_ABOVE      = re.compile(r"(?:above|over|more than|>)\s*(-?\d{1,3})", re.I)
+
+
+def _c_to_f(c: float) -> float:
+    return c * 9.0 / 5.0 + 32.0
+
+
+def _label_is_celsius(label: str) -> bool:
+    t = label.lower()
+    if "°c" in t or "celsius" in t:
+        return True
+    if "°f" in t or "fahrenheit" in t:
+        return False
+    # Heuristic: if all numbers are ≤ 50, assume Celsius (no US high-temp
+    # market goes that low; no European market goes that high in °C).
+    nums = re.findall(r"-?\d{1,3}", t)
+    if nums:
+        try:
+            if max(int(n) for n in nums) <= 50:
+                return True
+        except ValueError:
+            pass
+    return False
 
 
 def parse_bucket(label: str) -> tuple[float | None, float | None] | None:
-    """Return (lower_f, upper_f) where None means unbounded.
-
-    Inclusive convention: lower_f <= value <= upper_f for the bucket to win.
-    The integration code treats `None` as -inf or +inf.
-    """
+    """Return (lower_f, upper_f). None on either side = unbounded."""
+    if not label:
+        return None
+    celsius = _label_is_celsius(label)
     t = label.lower()
 
-    m = RX_RANGE.search(t)
+    def _convert(x: float) -> float:
+        return _c_to_f(x) if celsius else float(x)
+
+    # Range (e.g. "70-74", "71-75°F", "20-22°C")
+    m = RX_RANGE_C.search(t) if celsius else RX_RANGE_F.search(t)
+    if not m:
+        m = RX_RANGE_ANY.search(t)
     if m:
         lo, hi = int(m.group(1)), int(m.group(2))
-        return float(min(lo, hi)), float(max(lo, hi))
+        return _convert(min(lo, hi)), _convert(max(lo, hi))
 
-    m = RX_OR_LOWER.search(t)
+    # Upper-only (≤ X)
+    m = RX_OR_LOWER_C.search(t) if celsius else RX_OR_LOWER_F.search(t)
+    if not m and not celsius:
+        m = RX_OR_LOWER_F.search(t)
     if m:
-        return None, float(m.group(1))
+        return None, _convert(int(m.group(1)))
     m = RX_BELOW.search(t)
     if m:
-        # "below 70" = ≤ 69 in practice; treat as upper bound (69.5 for continuous)
-        return None, float(m.group(1)) - 0.5
+        return None, _convert(int(m.group(1)) - 0.5)
 
-    m = RX_OR_HIGHER.search(t)
+    # Lower-only (≥ X)
+    m = RX_OR_HIGHER_C.search(t) if celsius else RX_OR_HIGHER_F.search(t)
+    if not m and not celsius:
+        m = RX_OR_HIGHER_F.search(t)
     if m:
-        return float(m.group(1)), None
+        return _convert(int(m.group(1))), None
     m = RX_ABOVE.search(t)
     if m:
-        return float(m.group(1)) + 0.5, None
+        return _convert(int(m.group(1)) + 0.5), None
 
     return None
 
 
 # ---------------------------------------------------------------------------
-# Gamma discovery
+# Gamma discovery with pagination
 
-async def _gamma_events(limit: int = 200) -> list[dict]:
-    """Pull active, open weather/temperature events. We over-fetch and filter by title."""
+async def _gamma_events(max_total: int = 500) -> list[dict]:
+    """Paginated fetch of every active daily-temperature event."""
     out: list[dict] = []
+    page_size = 100
     async with httpx.AsyncClient(timeout=20.0) as c:
-        # Gamma supports keyword search via `search`, plus active/closed filters.
-        for kw in ("high temperature", "highest temperature"):
+        offset = 0
+        while offset < max_total:
             try:
                 r = await c.get(
                     f"{GAMMA_URL}/events",
                     params={
                         "active": "true",
                         "closed": "false",
-                        "limit": str(limit),
-                        "search": kw,
+                        "limit": str(page_size),
+                        "offset": str(offset),
+                        "tag_slug": "daily-temperature",
                     },
                 )
                 r.raise_for_status()
                 data = r.json()
-                if isinstance(data, list):
-                    out.extend(data)
-                elif isinstance(data, dict) and "data" in data:
-                    out.extend(data["data"])
+                page = data if isinstance(data, list) else (data.get("data") or [])
             except Exception as e:
-                log.warning("Gamma search failed for %r: %s", kw, e)
-    # dedupe by id
-    seen = set()
-    deduped = []
-    for e in out:
-        eid = str(e.get("id"))
-        if eid in seen:
-            continue
-        seen.add(eid)
-        deduped.append(e)
-    return deduped
+                log.warning("Gamma daily-temperature page offset=%d failed: %s", offset, e)
+                break
+            if not page:
+                break
+            out.extend(page)
+            if len(page) < page_size:
+                break
+            offset += page_size
+    return out
 
 
 def _looks_like_high_temp(event: dict) -> bool:
-    blob = ((event.get("title") or "") + " " + (event.get("description") or "")).lower()
-    return any(h in blob for h in TITLE_HINTS)
+    title = (event.get("title") or "").lower()
+    return any(h in title for h in TITLE_HINTS) and "lowest" not in title
 
 
 def _clob_token_ids(market: dict) -> tuple[str | None, str | None]:
-    """`clobTokenIds` is sometimes a JSON-encoded string, sometimes a list."""
     raw = market.get("clobTokenIds")
     if not raw:
         return None, None
@@ -144,7 +229,6 @@ def _clob_token_ids(market: dict) -> tuple[str | None, str | None]:
 
 
 def _bucket_label(market: dict) -> str:
-    # Polymarket uses `groupItemTitle` for the sub-bucket label within an event.
     return (
         market.get("groupItemTitle")
         or market.get("question")
@@ -154,7 +238,6 @@ def _bucket_label(market: dict) -> str:
 
 
 async def ingest_events() -> int:
-    """Discover and persist active daily-high-temp events + their buckets."""
     events = await _gamma_events()
     n_events = 0
     for ev in events:
@@ -165,20 +248,23 @@ async def ingest_events() -> int:
         title = ev.get("title") or ""
         description = ev.get("description") or ""
 
-        # Resolution airport: parse from Wunderground URL (source of truth).
-        icao = parse_resolution_icao(description)
+        icao, source = resolve_airport_icao(title, description)
         if icao is None:
-            log.info("No Wunderground URL in event %s (%r) — skipping", event_id, title[:80])
+            log.info("Could not resolve airport for event %s (%r) — skipping", event_id, title[:80])
             continue
         ap = get_airport(icao)
         if ap is None:
-            log.warning("ICAO %s not found in airportsdata for event %s — skipping",
-                        icao, event_id)
+            log.warning("ICAO %s (source=%s) not in airportsdata for event %s — skipping",
+                        icao, source, event_id)
             continue
         if not ap.has_curated_normals:
-            log.info("Using parametric fallback climo for %s (%s) — add normals to "
-                     "config/airport_normals.yaml for better accuracy",
+            log.info("Parametric fallback climo: %s (%s) — add normals to "
+                     "config/airport_normals.yaml for higher accuracy",
                      icao, ap.name)
+        if source == "city":
+            log.info("Event %s resolved by city name → %s (%s). If wrong, "
+                     "override in config/intl_airports.yaml.",
+                     event_id, icao, ap.name)
 
         end_date = ev.get("endDate") or ev.get("end_date")
         if not end_date:
@@ -190,21 +276,25 @@ async def ingest_events() -> int:
         if end_dt <= datetime.now(timezone.utc):
             continue
 
-        # local date is the date in airport TZ on which the market resolves
         local_date = end_dt.astimezone(ap.zone).date().isoformat()
 
         db.upsert_market(event_id, title, description, ap.icao, local_date,
                          end_dt.isoformat(), ev)
 
+        n_buckets = 0
         for m in ev.get("markets", []) or []:
             mkt_id = str(m.get("id"))
             label = _bucket_label(m)
             bounds = parse_bucket(label)
             if bounds is None:
-                log.debug("Unparseable bucket: %r (market %s)", label, mkt_id)
+                log.debug("Unparseable bucket: %r (event %s, market %s)",
+                          label, event_id, mkt_id)
                 continue
             yes_tok, no_tok = _clob_token_ids(m)
             db.upsert_bucket(mkt_id, event_id, label, bounds[0], bounds[1], yes_tok, no_tok)
+            n_buckets += 1
+
+        log.debug("Event %s (%s): %d buckets", event_id, ap.icao, n_buckets)
         n_events += 1
     log.info("Polymarket ingest: %d high-temp events upserted", n_events)
     return n_events
@@ -214,7 +304,6 @@ async def ingest_events() -> int:
 # CLOB order book
 
 async def get_best_ask(token_id: str) -> float | None:
-    """Best (lowest) ask price for a YES token."""
     if not token_id:
         return None
     try:
@@ -225,16 +314,13 @@ async def get_best_ask(token_id: str) -> float | None:
         asks = book.get("asks") or []
         if not asks:
             return None
-        # CLOB returns asks ascending; sometimes not — be defensive.
         prices = []
         for a in asks:
             try:
                 prices.append(float(a["price"]))
             except (KeyError, TypeError, ValueError):
                 continue
-        if not prices:
-            return None
-        return min(prices)
+        return min(prices) if prices else None
     except Exception as e:
         log.debug("CLOB book fetch failed for token %s: %s", token_id, e)
         return None

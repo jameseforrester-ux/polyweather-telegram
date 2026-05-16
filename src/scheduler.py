@@ -14,7 +14,7 @@ from telegram.ext import ContextTypes
 from .db import init_schema, list_active_events
 from .ingest import polymarket as pm
 from .ingest import metar as metar_mod
-from .ingest import hrrr as hrrr_mod
+from .ingest import nwp as nwp_mod
 from .ingest.climatology import load_airports, get_airport
 from .alerts.triggers import evaluate_all, Alert
 
@@ -59,21 +59,21 @@ async def job_metar(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def job_hrrr(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Despite the historic name, this dispatches HRRR for CONUS airports
+    and GFS for everything else, via src.ingest.nwp."""
     active_icaos = {
         ev["airport_icao"] for ev in list_active_events() if ev["airport_icao"]
     }
     if not active_icaos:
         return
-    # Herbie is synchronous; run each airport in a thread, sequentially
-    # (parallelism risks blowing up file handles & confusing the cache)
     for icao in active_icaos:
         ap = get_airport(icao)
         if ap is None:
             continue
         try:
-            await asyncio.to_thread(hrrr_mod.ingest_airport, ap)
+            await asyncio.to_thread(nwp_mod.ingest_airport, ap)
         except Exception as e:
-            log.exception("hrrr ingest %s error: %s", icao, e)
+            log.exception("NWP ingest %s error: %s", icao, e)
 
 
 async def job_alerts(context: ContextTypes.DEFAULT_TYPE) -> None:

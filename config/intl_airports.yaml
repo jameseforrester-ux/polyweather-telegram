@@ -1,0 +1,82 @@
+# Polymarket sometimes runs daily-temperature markets for non-US cities
+# without including a Wunderground URL in the description. This file maps
+# the city name (from the market title "Highest temperature in CITY on ...")
+# to the ICAO code of its likely resolution airport.
+#
+# These are educated guesses based on each city's primary international
+# airport. If Polymarket actually resolves a city against a different
+# station, just edit the ICAO here and restart the bot. The bot will log
+# `Using parametric fallback climo for KICAO` for any airport without
+# curated climate normals in airport_normals.yaml — add a block there if
+# you want better-than-parametric accuracy for a city you trade often.
+#
+# Match is case-insensitive on the city name as it appears in the title.
+
+# Europe
+"London":      EGLL    # Heathrow
+"Paris":       LFPG    # Charles de Gaulle
+"Madrid":      LEMD    # Barajas
+"Amsterdam":   EHAM    # Schiphol
+"Frankfurt":   EDDF    # Frankfurt
+"Munich":      EDDM    # Munich
+"Milan":       LIMC    # Malpensa
+"Warsaw":      EPWA    # Chopin
+"Helsinki":    EFHK    # Vantaa
+"Moscow":      UUEE    # Sheremetyevo
+"Istanbul":    LTFM    # Istanbul Airport (new)
+"Ankara":      LTAC    # Esenboğa
+
+# East Asia
+"Tokyo":       RJTT    # Haneda
+"Hong Kong":   VHHH    # Hong Kong International
+"Seoul":       RKSI    # Incheon
+"Busan":       RKPK    # Gimhae
+"Taipei":      RCTP    # Taoyuan
+"Beijing":     ZBAA    # Capital
+"Shanghai":    ZSPD    # Pudong
+"Shenzhen":    ZGSZ    # Bao'an
+"Guangzhou":   ZGGG    # Baiyun
+"Chengdu":     ZUUU    # Shuangliu
+"Chongqing":   ZUCK    # Jiangbei
+"Wuhan":       ZHHH    # Tianhe
+"Qingdao":     ZSQD    # Liuting
+
+# Southeast Asia / Pacific
+"Singapore":   WSSS    # Changi
+"Bangkok":     VTBS    # Suvarnabhumi
+"Jakarta":     WIII    # Soekarno-Hatta
+"Kuala Lumpur": WMKK   # KL International
+"Manila":      RPLL    # Ninoy Aquino
+"Sydney":      YSSY    # Kingsford Smith
+"Wellington":  NZWN    # Wellington
+"Auckland":    NZAA    # Auckland
+
+# South Asia / Middle East
+"Karachi":     OPKC    # Jinnah
+"Lucknow":     VILK    # Chaudhary Charan Singh
+"Mumbai":      VABB    # Chhatrapati Shivaji
+"Delhi":       VIDP    # Indira Gandhi
+"Dubai":       OMDB    # Dubai International
+"Jeddah":      OEJN    # King Abdulaziz
+"Riyadh":      OERK    # King Khaled
+"Tel Aviv":    LLBG    # Ben Gurion
+
+# Africa
+"Cape Town":   FACT    # Cape Town International
+"Johannesburg": FAOR   # O.R. Tambo
+"Lagos":       DNMM    # Murtala Muhammed
+"Cairo":       HECA    # Cairo International
+"Nairobi":     HKJK    # Jomo Kenyatta
+
+# Americas (non-CONUS)
+"Toronto":     CYYZ    # Pearson
+"Montreal":    CYUL    # Trudeau
+"Vancouver":   CYVR    # Vancouver
+"Mexico City": MMMX    # Benito Juárez
+"Panama City": MPTO    # Tocumen
+"Sao Paulo":   SBGR    # Guarulhos
+"Rio de Janeiro": SBGL # Galeão
+"Buenos Aires": SAEZ   # Ezeiza
+"Santiago":    SCEL    # Arturo Merino Benítez
+"Lima":        SPJC    # Jorge Chávez
+"Bogota":      SKBO    # El Dorado

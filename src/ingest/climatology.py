@@ -116,11 +116,23 @@ def match_airport_by_keyword(text: str):  # pragma: no cover  (deprecated)
 # not in airport_normals.yaml. Tuned roughly for CONUS at lat 25-50N.
 
 def parametric_normals(lat: float, month: int) -> tuple[float, float]:
-    annual_mean = 71.0 - 0.9 * max(0.0, abs(lat) - 25.0)
-    swing = 13.0 + 0.55 * max(0.0, abs(lat) - 25.0)
-    seasonal = swing * math.cos(2 * math.pi * (month - 7) / 12.0)
+    """Rough fallback for airports without curated normals.
+    Tuned for CONUS but adjusts globally (Southern Hemisphere seasonality
+    flipped, tropical seasonal swing dampened).
+    """
+    abs_lat = abs(lat)
+    # Annual mean: cools with distance from tropics
+    annual_mean = 79.0 - 0.5 * max(0.0, abs_lat - 23.5)
+    # Seasonal swing: small in tropics, grows with latitude
+    if abs_lat < 23.5:
+        swing = 2.0 + (abs_lat / 23.5) * 6.0
+    else:
+        swing = 8.0 + (abs_lat - 23.5) * 0.7
+    # Northern hemisphere peaks July; Southern peaks January
+    peak_month = 7 if lat >= 0 else 1
+    seasonal = swing * math.cos(2 * math.pi * (month - peak_month) / 12.0)
     daily_mean = annual_mean + seasonal
-    diurnal_range = 18.0
+    diurnal_range = 16.0 + max(0.0, abs_lat - 30.0) * 0.15
     return daily_mean + diurnal_range / 2, daily_mean - diurnal_range / 2
 
 
